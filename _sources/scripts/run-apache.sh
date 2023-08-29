@@ -94,14 +94,14 @@ fi
 
 run_maintenance_scripts() {
   # Iterate through all the .sh files in /maintenance-scripts/ directory
-  for maintenance_script in $(find /maintenance-scripts/ -maxdepth 1 -mindepth 1 -type f -name "*.sh"); do
+  for maintenance_script in $(find /maintenance-scripts/ -maxdepth 1 -mindepth 1 -type f -name "*.sh" | sort); do
     script_name=$(basename "$maintenance_script")
 
-    # If the script's name starts with "mw_", run it with the run_mw_script function
-    if [[ "$script_name" == mw* ]]; then
+    # If the script's name starts with a number followed by "_mw", run it with the run_mw_script function
+    if [[ "$script_name" =~ ^[0-9]+_mw ]]; then
       run_mw_script "$script_name" &
     else
-      # If the script's name doesn't start with "mw"
+      # If the script's name doesn't start with a number and "_mw", run it with the runuser function
       echo "Running $script_name with user $WWW_USER..."
       nice -n 20 runuser -c "/maintenance-scripts/$script_name" -s /bin/bash "$WWW_USER" &
     fi
@@ -118,7 +118,9 @@ run_mw_script() {
 
   # Process the script name and create the corresponding enable variable
   local script_name="$1"
-  script_name_no_ext="${script_name%.*}"
+  # Remove the numerical prefix from the script name
+  local script_name_no_prefix="${script_name#*_}"
+  script_name_no_ext="${script_name_no_prefix%.*}"
   script_name_upper=$(basename "$script_name_no_ext" | tr '[:lower:]' '[:upper:]')
   local MW_ENABLE_VAR="${script_name_upper/_/_ENABLE_}"
 
@@ -130,7 +132,6 @@ run_mw_script() {
   fi
 }
 
-
 waitdatabase() {
   if isFalse "$USE_EXTERNAL_DB"; then
     /wait-for-it.sh -t 60 db:3306
@@ -140,6 +141,18 @@ waitdatabase() {
 #waitelastic() {
 #  ./wait-for-it.sh -t 60 elasticsearch:9200
 #}
+
+config_subdir_wikis() {
+    echo "Configuring subdirectory wikis..."
+    /config-subdir-wikis.sh
+    echo "Configured subdirectory wikis..."
+}
+
+create_storage_dirs() {
+    echo "Creating cache and images dirs..."
+    /create-storage-dirs.sh
+    echo "Created cache and images dirs..."
+}
 
 run_autoupdate () {
     echo "Running auto-update..."
@@ -176,14 +189,19 @@ cd "$MW_HOME" || exit
 
 ########## Run maintenance scripts ##########
 echo "Checking for LocalSettings..."
-if [ -e "$MW_VOLUME/config/LocalSettings.php"  ]; then
+if [ -e "$MW_VOLUME/config/LocalSettings.php" ] || [ -e "$MW_VOLUME/config/CommonSettings.php" ]; then
   # Run auto-update
   run_autoupdate
+  if [ -e "$MW_VOLUME/config/wikis.yaml" ]; then
+    config_subdir_wikis
+    create_storage_dirs
+  fi
 fi
 
 echo "Starting services..."
 
 run_maintenance_scripts &
+inotifywait &
 
 # Running php-fpm
 /run-php-fpm.sh &
